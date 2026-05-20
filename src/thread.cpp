@@ -46,7 +46,35 @@
 #include <sys/ptrace.h>
 #include <sys/user.h>
 #include <sys/wait.h>
+#if defined(__ANDROID__) || defined(__BIONIC__) || (defined(__linux__) && defined(__aarch64__))
+#include <libucontext/libucontext.h>
+extern "C" {
+int darling_libucontext_getcontext(libucontext_ucontext_t*) __asm__("libucontext_getcontext");
+int darling_libucontext_setcontext(const libucontext_ucontext_t*) __asm__("libucontext_setcontext");
+int darling_libucontext_swapcontext(libucontext_ucontext_t*, const libucontext_ucontext_t*) __asm__("libucontext_swapcontext");
+}
+#define getcontext(u) darling_libucontext_getcontext(u)
+#if defined(__aarch64__)
+static inline void darling_dserver_makecontext_arm64(libucontext_ucontext_t* ucp, void (*func)(), ...) {
+	uintptr_t* sp = (uintptr_t*)((uintptr_t)ucp->uc_stack.ss_sp + ucp->uc_stack.ss_size);
+	sp = (uintptr_t*)((uintptr_t)sp & -16L);
+	ucp->uc_mcontext.sp = (uintptr_t)sp;
+	ucp->uc_mcontext.pc = (uintptr_t)func;
+	ucp->uc_mcontext.regs[0] = 0;
+	ucp->uc_mcontext.regs[19] = (uintptr_t)ucp->uc_link;
+	ucp->uc_mcontext.regs[29] = 0;
+	ucp->uc_mcontext.regs[30] = 0;
+}
+#define makecontext(u, fn, ...) darling_dserver_makecontext_arm64(u, (void(*)())fn, __VA_ARGS__)
+#endif
+#define setcontext(u) darling_libucontext_setcontext(u)
+#define swapcontext(ou, nu) darling_libucontext_swapcontext(ou, nu)
+#endif
 #include <vector>
+#if defined(__aarch64__)
+#include <sys/uio.h>
+#include <elf.h>
+#endif
 
 // 64KiB should be enough for us
 #define THREAD_STACK_SIZE (64 * 1024ULL)
@@ -145,16 +173,23 @@ DarlingServer::Thread::Thread(std::shared_ptr<Process> process, NSID nsid, void*
 					continue;
 				}
 
+#if defined(__aarch64__)
+				struct user_regs_struct regs;
+				struct iovec iov = { &regs, sizeof(regs) };
+				if (ptrace(PTRACE_GETREGSET, id, (void*)NT_PRSTATUS, &iov) == -1) {
+					continue;
+				}
+				intptr_t stackDiff = (intptr_t)stackHint - (intptr_t)regs.sp;
+				if (stackDiff >= 0 && stackDiff < nearest) {
+#elif defined(__x86_64__)
 				struct user_regs_struct regs;
 				if (ptrace(PTRACE_GETREGS, id, 0, &regs) == -1) {
 					continue;
 				}
-
-#ifdef __x86_64__
 				intptr_t stackDiff = (intptr_t)stackHint - (intptr_t)regs.rsp;
 				if (stackDiff >= 0 && stackDiff < nearest) {
 #else
-	#warning Unsupported architecture
+	#error Unsupported architecture
 				if (true) {
 #endif
 					chosenId = id;
