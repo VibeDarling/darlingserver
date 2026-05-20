@@ -63,7 +63,7 @@ void fixPermissionsRecursive(const char* path, uid_t originalUID, gid_t original
 	DIR* dir;
 	struct dirent* ent;
 
-	if (chown(path, originalUID, originalGID) == -1)
+	if (geteuid() == 0 && chown(path, originalUID, originalGID) == -1)
 		fprintf(stderr, "Cannot chown %s: %s\n", path, strerror(errno));
 
 	dir = opendir(path);
@@ -94,9 +94,11 @@ void fixPermissionsRecursive(const char* path, uid_t originalUID, gid_t original
 const char* xdgDirectory(const char* name)
 {
 	static char dir[4096];
-	char* cmd = (char*) malloc(sizeof(DARLINGSERVER_XDG_USER_DIR_CMD) + 1 + strlen(name));
-
-	sprintf(cmd, DARLINGSERVER_XDG_USER_DIR_CMD " %s", name);
+#define DARLING_XDG_REDIRECT " 2>/dev/null"
+	size_t cmd_len = sizeof(DARLINGSERVER_XDG_USER_DIR_CMD " " DARLING_XDG_REDIRECT) + strlen(name);
+	char* cmd = (char*) malloc(cmd_len);
+	if (!cmd) return "";
+	snprintf(cmd, cmd_len, DARLINGSERVER_XDG_USER_DIR_CMD " %s" DARLING_XDG_REDIRECT, name);
 
 	FILE* proc = popen(cmd, "r");
 
@@ -415,12 +417,16 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 						fprintf(stderr, "Failed to delete old destination file %s: %s\n", toPath.c_str(), strerror(errno));
 						abort();
 					}
-					std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks);
+					std::error_code ec;
+					std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks, ec);
+					if (ec) return;
 					updateAttributes = true;
 				}
 			}
 		} else {
-			std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks);
+			std::error_code ec;
+			std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks, ec);
+			if (ec) return;
 			updateAttributes = true;
 		}
 	}
@@ -461,6 +467,9 @@ static void temp_drop_privileges(uid_t uid, gid_t gid) {
 };
 
 static void perma_drop_privileges(uid_t uid, gid_t gid) {
+	if (geteuid() != 0) {
+		return;
+	}
 	if (setresgid(gid, gid, gid) < 0) {
 		fprintf(stderr, "Failed to drop group privileges\n");
 		exit(1);
@@ -472,6 +481,9 @@ static void perma_drop_privileges(uid_t uid, gid_t gid) {
 };
 
 static void regain_privileges() {
+	if (getuid() != 0 && geteuid() != 0) {
+		return;
+	}
 	if (seteuid(0) < 0) {
 		fprintf(stderr, "Failed to regain root EUID\n");
 		exit(1);
@@ -538,10 +550,6 @@ int main(int argc, char** argv) {
 
 	prefix_length = strlen(prefix);
 
-	if (getuid() != 0 || getgid() != 0) {
-		fprintf(stderr, "darlingserver needs to start as root\n");
-		exit(1);
-	}
 
 	// temporarily drop privileges to perform some prefix work
 	temp_drop_privileges(originalUID, originalGID);
@@ -560,15 +568,17 @@ int main(int argc, char** argv) {
 		// read the system maximum
 		nr_open_file = fopen("/proc/sys/fs/nr_open", "r");
 		if (nr_open_file == NULL) {
-			fprintf(stderr, "Warning: failed to open /proc/sys/fs/nr_open: %s\n", strerror(errno));
+			if (geteuid() == 0 && errno != EACCES && errno != EPERM)
+				fprintf(stderr, "Warning: failed to open /proc/sys/fs/nr_open: %s\n", strerror(errno));
 			increased_limit.rlim_cur = increased_limit.rlim_max = default_limit.rlim_max;
 			//exit(1);
 		} else {
-			if (fscanf(nr_open_file, "%lu", &increased_limit.rlim_max) != 1) {
-				fprintf(stderr, "Failed to read /proc/sys/fs/nr_open: %s\n", strerror(errno));
-				exit(1);
+			unsigned long read_max = 0;
+			if (fscanf(nr_open_file, "%lu", &read_max) == 1) {
+				increased_limit.rlim_cur = increased_limit.rlim_max = read_max;
+			} else {
+				increased_limit.rlim_cur = increased_limit.rlim_max = default_limit.rlim_max;
 			}
-			increased_limit.rlim_cur = increased_limit.rlim_max;
 			if (fclose(nr_open_file) != 0) {
 				fprintf(stderr, "Failed to close /proc/sys/fs/nr_open: %s\n", strerror(errno));
 				exit(1);
@@ -595,9 +605,8 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// Since overlay cannot be mounted inside user namespaces, we have to setup a new mount namespace
-	// and do the mount while we can be root
-	if (unshare(CLONE_NEWNS) != 0)
+	// Setup mount namespace if root
+	if (geteuid() == 0 && unshare(CLONE_NEWNS) != 0)
 	{
 		fprintf(stderr, "Cannot unshare PID and mount namespaces: %s\n", strerror(errno));
 		exit(1);
@@ -642,8 +651,10 @@ int main(int argc, char** argv) {
 					goto mount_ok;
 				}
 			}
-			fprintf(stderr, "Cannot mount overlay: %s\n", strerror(errno));
-			exit(1);
+			fprintf(stderr, "Cannot mount overlay: %s; falling back to direct copy\n", strerror(errno));
+			std::string fromPath = LIBEXEC_PATH;
+			std::string toPath = prefix;
+			copyAndSetAttributes(fromPath, toPath);
 		}
 
 	mount_ok:
@@ -693,6 +704,10 @@ int main(int argc, char** argv) {
 	launchdGlobalPID = syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, NULL, NULL, NULL, 0);
 
 	if (launchdGlobalPID < 0) {
+		launchdGlobalPID = fork();
+	}
+
+	if (launchdGlobalPID < 0) {
 		fprintf(stderr, "Failed to fork to start launchd: %s\n", strerror(errno));
 		exit(1);
 	} else if (launchdGlobalPID == 0) {
@@ -701,13 +716,27 @@ int main(int argc, char** argv) {
 
 		close(childWaitFDs[1]);
 
-		snprintf(putOld, sizeof(putOld), "%s/proc", prefix);
+		// Detach launchd into its own session + process group, so that any
+		// signals it (or its children) broadcast via kill(0/-1, ...) or
+		// killpg(0, ...) do not propagate back up to darlingserver / darling /
+		// timeout (which all share the same pgrp by default). On ARM64 we
+		// observed launchd's startup broadcasting SIGTRAP, killing the parents.
+		if (setsid() == (pid_t)-1) {
+			if (errno != EPERM)
+				fprintf(stderr, "Warning: setsid() failed before launchd: %s\n", strerror(errno));
+			// continue anyway
+		}
 
-		// mount procfs for our new PID namespace
-		if (mount("proc", putOld, "proc", 0, "") != 0)
+		snprintf(putOld, sizeof(putOld), "%s/proc", prefix);
+		if (geteuid() == 0)
 		{
-			fprintf(stderr, "Cannot mount procfs: %s\n", strerror(errno));
-			exit(1);
+			snprintf(putOld, sizeof(putOld), "%s/proc", prefix);
+
+			// mount procfs for our new PID namespace
+			if (mount("proc", putOld, "proc", 0, "") != 0)
+			{
+				fprintf(stderr, "Cannot mount procfs: %s\n", strerror(errno));
+			}
 		}
 
 		// drop our privileges now
