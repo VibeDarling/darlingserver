@@ -134,7 +134,7 @@ struct pqueue {
 	static inline entry_t
 	unpack_child(entry_t e)
 	{
-		return (entry_t)e->child;
+		return (entry_t)((uintptr_t)e->child & 0x0000ffffffffffffULL);
 	}
 
 private:
