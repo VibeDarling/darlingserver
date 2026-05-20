@@ -33,7 +33,12 @@ void* mmap(void* addr, size_t length, int prot, int flags, int fd, long int offs
 int munmap(void* addr, size_t length);
 long sysconf(int name);
 
-int memfd_create(const char *name, unsigned int flags);
+#include <sys/syscall.h>
+#ifndef SYS_memfd_create
+#define SYS_memfd_create 279
+#endif
+extern long syscall(long number, ...);
+static inline int memfd_create(const char *name, unsigned int flags) { return (int)syscall(SYS_memfd_create, name, flags); }
 
 int close(int fd);
 int ftruncate(int fd, off_t length);
@@ -363,13 +368,17 @@ int (copyout)(const void* kernel_addr, user_addr_t user_addr, vm_size_t nbytes) 
 	return (copyoutmap(current_map(), (void*)kernel_addr, user_addr, nbytes) == KERN_SUCCESS) ? 0 : 1;
 };
 
+#ifndef copyinmsg
 int copyinmsg(const user_addr_t user_addr, char* kernel_addr, mach_msg_size_t nbytes) {
 	return (copyin)(user_addr, kernel_addr, nbytes);
 };
+#endif
 
+#ifndef copyoutmsg
 int copyoutmsg(const char* kernel_addr, user_addr_t user_addr, mach_msg_size_t nbytes) {
 	return (copyout)(kernel_addr, user_addr, nbytes);
 };
+#endif
 
 kern_return_t kmem_suballoc(vm_map_t parent, vm_offset_t* addr, vm_size_t size, boolean_t pageable, int flags, vm_map_kernel_flags_t vmk_flags, vm_tag_t tag, vm_map_t* new_map) {
 	// this is enough to satisfy ipc_init
