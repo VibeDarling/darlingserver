@@ -486,6 +486,12 @@ calls = [
 		('nsec', 'uint32_t'),
 	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | ALLOW_INTERRUPTIONS),
 
+	('mach_generate_activity_id', [
+		('count', 'uint32_t'),
+	], [
+		('activity_id', 'uint64_t'),
+	]),
+
 	#
 	# mk_timer traps
 	#

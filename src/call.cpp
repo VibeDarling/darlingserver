@@ -29,7 +29,13 @@
 #include <sys/syscall.h>
 #include <darlingserver/kqchan.hpp>
 
+#include <atomic>
+
 static DarlingServer::Log callLog("calls");
+
+static std::atomic<uint64_t> nextActivityID { 1 };
+static constexpr int machKernSuccess = 0;
+static constexpr int machKernInvalidArgument = 4;
 
 DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
 
@@ -599,6 +605,16 @@ void DarlingServer::Call::ThreadGetSpecialReplyPort::processCall() {
 
 void DarlingServer::Call::MkTimerCreate::processCall() {
 	_sendReply(0, dtape_mk_timer_create());
+};
+
+void DarlingServer::Call::MachGenerateActivityId::processCall() {
+	if (_body.count == 0 || _body.count > 16) {
+		_sendReply(machKernInvalidArgument, 0);
+		return;
+	}
+
+	uint64_t activityID = nextActivityID.fetch_add(_body.count) + _body.count;
+	_sendReply(machKernSuccess, activityID);
 };
 
 void DarlingServer::Call::PthreadKill::processCall() {
