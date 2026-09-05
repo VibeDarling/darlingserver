@@ -419,14 +419,14 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 					}
 					std::error_code ec;
 					std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks, ec);
-					if (ec) return;
+					if (ec) { fprintf(stderr, "copy %s -> %s failed: %s\n", fromPath.c_str(), toPath.c_str(), ec.message().c_str()); return; }
 					updateAttributes = true;
 				}
 			}
 		} else {
 			std::error_code ec;
 			std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks, ec);
-			if (ec) return;
+			if (ec) { fprintf(stderr, "copy %s -> %s failed: %s\n", fromPath.c_str(), toPath.c_str(), ec.message().c_str()); return; }
 			updateAttributes = true;
 		}
 	}
@@ -455,6 +455,9 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 }
 
 static void temp_drop_privileges(uid_t uid, gid_t gid) {
+	if (geteuid() != 0) {
+		return;
+	}
 	// it's important to drop GID first, because non-root users can't change their GID
 	if (setresgid(gid, gid, 0) < 0) {
 		fprintf(stderr, "Failed to temporarily drop group privileges\n");
@@ -619,14 +622,17 @@ int main(int argc, char** argv) {
 		shmMountFlags |= MS_NOEXEC;
 	}
 
-	umount("/dev/shm");
-	if (mount("tmpfs", "/dev/shm", "tmpfs", shmMountFlags, NULL) != 0)
+	if (geteuid() == 0)
 	{
-		fprintf(stderr, "Cannot mount new /dev/shm: %s\n", strerror(errno));
-		exit(1);
+		umount("/dev/shm");
+		if (mount("tmpfs", "/dev/shm", "tmpfs", shmMountFlags, NULL) != 0)
+		{
+			fprintf(stderr, "Cannot mount new /dev/shm: %s\n", strerror(errno));
+			exit(1);
+		}
 	}
 
-	if (shouldUseOverlayFs()) {
+	if (shouldUseOverlayFs() && geteuid() == 0) {
 		// Because systemd marks / as MS_SHARED and we would inherit this into the overlay mount,
 		// causing it not to be unmounted once the init process dies.
 		if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0)
