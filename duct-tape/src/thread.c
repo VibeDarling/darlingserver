@@ -235,6 +235,7 @@ int dtape_thread_load_state_from_user(dtape_thread_t* thread, uintptr_t thread_s
 		thread_set_state(current_thread(), x86_FLOAT_STATE32, (thread_state_t) &fstate, x86_FLOAT_STATE32_COUNT);
 	} else
 #endif
+#if defined(__aarch64__) || defined(__arm64__)
 	if (task->architecture == dserver_rpc_architecture_arm64) {
 		arm_thread_state64_t tstate;
 		arm_neon_state64_t fstate;
@@ -245,7 +246,9 @@ int dtape_thread_load_state_from_user(dtape_thread_t* thread, uintptr_t thread_s
 
 		thread_set_state(current_thread(), ARM_THREAD_STATE64, (thread_state_t) &tstate, ARM_THREAD_STATE64_COUNT);
 		thread_set_state(current_thread(), ARM_NEON_STATE64, (thread_state_t) &fstate, ARM_NEON_STATE64_COUNT);
-	} else {
+	} else
+#endif
+	{
 		dtape_log_error("dtape_thread_load_state_from_user() unimplemented for architecture: %d", task->architecture);
 		return -LINUX_ENOSYS;
 	}
@@ -285,8 +288,9 @@ int dtape_thread_save_state_to_user(dtape_thread_t* thread, uintptr_t thread_sta
 		if (copyout(&tstate, thread_state_address, sizeof(tstate)) || copyout(&fstate, float_state_address, sizeof(fstate))) {
 			return -LINUX_EFAULT;
 		}
-	}
+	} else
 #endif
+#if defined(__aarch64__) || defined(__arm64__)
 	if (task->architecture == dserver_rpc_architecture_arm64) {
 		arm_thread_state64_t tstate;
 		arm_neon_state64_t fstate;
@@ -301,7 +305,9 @@ int dtape_thread_save_state_to_user(dtape_thread_t* thread, uintptr_t thread_sta
 		if (copyout(&tstate, thread_state_address, sizeof(tstate)) || copyout(&fstate, float_state_address, sizeof(fstate))) {
 			return -LINUX_EFAULT;
 		}
-	} else {
+	} else
+#endif
+	{
 		dtape_log_error("dtape_thread_save_state_to_user() unimplemented for architecture: %d", task->architecture);
 		return -LINUX_ENOSYS;
 	}
@@ -905,8 +911,9 @@ thread_set_state(
 			default:
 				return KERN_INVALID_ARGUMENT;
 		}
-	}
+	} else
 #endif
+#if defined(__aarch64__) || defined(__arm64__)
 	if (dtask->architecture == dserver_rpc_architecture_arm64) {
 		switch (flavor)
 		{
@@ -949,8 +956,11 @@ thread_set_state(
 			default:
 				return KERN_INVALID_ARGUMENT;
 		}
+	} else
+#endif
+	{
+		return KERN_FAILURE;
 	}
-	return KERN_FAILURE;
 }
 
 kern_return_t
@@ -1202,8 +1212,9 @@ thread_get_state_internal(
 			default:
 				return KERN_INVALID_ARGUMENT;
 		}
-	}
+	} else
 #endif
+#if defined(__aarch64__) || defined(__arm64__)
 	if (dtask->architecture == dserver_rpc_architecture_arm64) {
 		switch (flavor)
 		{
@@ -1251,7 +1262,9 @@ thread_get_state_internal(
 			default:
 				return KERN_INVALID_ARGUMENT;
 		}
-	} else {
+	} else
+#endif
+	{
 		return KERN_FAILURE;
 	}
 }
