@@ -126,10 +126,15 @@ add_dependencies(darlingserver
 )
 
 target_link_libraries(darlingserver PRIVATE
-	ucontext
-	android-posix-semaphore
 	darlingserver_duct_tape
 )
+
+if (ANDROID)
+	target_link_libraries(darlingserver PRIVATE
+		ucontext
+		android-posix-semaphore
+	)
+endif()
 
 target_compile_options(darlingserver PRIVATE
 	-pthread
