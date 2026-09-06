@@ -46,7 +46,7 @@
 #include <sys/ptrace.h>
 #include <sys/user.h>
 #include <sys/wait.h>
-#if defined(__ANDROID__) || defined(__BIONIC__) || (defined(__linux__) && defined(__aarch64__))
+#if defined(__ANDROID__) || defined(__BIONIC__)
 #include <libucontext/libucontext.h>
 extern "C" {
 int darling_libucontext_getcontext(libucontext_ucontext_t*) __asm__("libucontext_getcontext");
