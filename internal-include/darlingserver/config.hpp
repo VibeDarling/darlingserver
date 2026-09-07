@@ -9,7 +9,17 @@ namespace DarlingServer {
 		// NOTE: you should not rely on these values being `constexpr`;
 		//       in the future, there may be a way to change them during startup.
 
-		constexpr std::string_view defaultMldrPath = LIBEXEC_PATH "/usr/libexec/darling/mldr";
+		inline std::string getLibexecPath() {
+			const char* env = getenv("DARLING_LIBEXEC_PATH");
+			if (env && env[0]) {
+				return env;
+			}
+			return LIBEXEC_PATH;
+		}
+
+		inline std::string defaultMldrPath() {
+			return getLibexecPath() + "/usr/libexec/darling/mldr";
+		}
 
 		// this would actually probably be better as a workqueue construction parameter
 		constexpr bool singleThreadedWorkQueue = DSERVER_SINGLE_THREADED;

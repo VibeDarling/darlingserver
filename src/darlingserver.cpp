@@ -268,9 +268,13 @@ void spawnLaunchd(const char* prefix)
 		initPath = DARLINGSERVER_INIT_PROCESS;
 	}
 
-	setenv("__mldr_DYLD_ROOT_PATH", LIBEXEC_PATH, 1);
+	std::string libexec = DarlingServer::Config::getLibexecPath();
+	setenv("__mldr_DYLD_ROOT_PATH", libexec.c_str(), 1);
 	setenv("__mldr_sockpath", tmp.c_str(), 1);
-	execl(DarlingServer::Config::defaultMldrPath.data(), "mldr!" LIBEXEC_PATH "/usr/libexec/darling/vchroot", "vchroot", prefix, initPath, NULL);
+	std::string mldrPath = DarlingServer::Config::defaultMldrPath();
+	char vchrootArg0[4096];
+	snprintf(vchrootArg0, sizeof(vchrootArg0), "mldr!%s/usr/libexec/darling/vchroot", libexec.c_str());
+	execl(mldrPath.c_str(), vchrootArg0, "vchroot", prefix, initPath, NULL);
 
 	fprintf(stderr, "Failed to exec launchd: %s\n", strerror(errno));
 	abort();
@@ -641,24 +645,25 @@ int main(int argc, char** argv) {
 			exit(1);
 		}
 
-		opts = (char*) malloc(strlen(prefix)*2 + sizeof(LIBEXEC_PATH) + 100);
+		std::string libexec = DarlingServer::Config::getLibexecPath();
+		opts = (char*) malloc(strlen(prefix)*2 + libexec.length() + 100);
 
 		const char* opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s.workdir,index=off";
 
-		sprintf(opts, opts_fmt, LIBEXEC_PATH, prefix, prefix);
+		sprintf(opts, opts_fmt, libexec.c_str(), prefix, prefix);
 
 		// Mount overlay onto our prefix
 		if (mount("overlay", prefix, "overlay", 0, opts) != 0)
 		{
 			if (errno == EINVAL) {
 				opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s.workdir";
-				sprintf(opts, opts_fmt, LIBEXEC_PATH, prefix, prefix);
+				sprintf(opts, opts_fmt, libexec.c_str(), prefix, prefix);
 				if (mount("overlay", prefix, "overlay", 0, opts) == 0) {
 					goto mount_ok;
 				}
 			}
 			fprintf(stderr, "Cannot mount overlay: %s; falling back to direct copy\n", strerror(errno));
-			std::string fromPath = LIBEXEC_PATH;
+			std::string fromPath = libexec;
 			std::string toPath = prefix;
 			copyAndSetAttributes(fromPath, toPath);
 		}
@@ -666,7 +671,7 @@ int main(int argc, char** argv) {
 	mount_ok:
 		free(opts);
 	} else {
-		std::string fromPath = LIBEXEC_PATH;
+		std::string fromPath = DarlingServer::Config::getLibexecPath();
 		std::string toPath = prefix;
 		copyAndSetAttributes(fromPath, toPath);
 	}
