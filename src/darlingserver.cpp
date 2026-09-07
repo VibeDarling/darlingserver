@@ -234,8 +234,42 @@ static void wipeDir(const char* dirpath)
 	closedir(dir);
 }
 
+static void ensureProcSymlink(const char* prefixPath)
+{
+	char procPath[4096];
+	struct stat st;
+	snprintf(procPath, sizeof(procPath), "%s/proc", prefixPath);
+	if (lstat(procPath, &st) == 0)
+	{
+		if (S_ISDIR(st.st_mode))
+		{
+			rmdir(procPath);
+		}
+		else if (S_ISLNK(st.st_mode))
+		{
+			char target[256];
+			ssize_t len = readlink(procPath, target, sizeof(target) - 1);
+			if (len > 0)
+			{
+				target[len] = '\0';
+				if (strcmp(target, "/Volumes/SystemRoot/proc") != 0)
+					unlink(procPath);
+			}
+		}
+	}
+	if (lstat(procPath, &st) != 0)
+	{
+		symlink("/Volumes/SystemRoot/proc", procPath);
+	}
+}
+
 void darlingPreInit(const char* prefix)
 {
+	if (getenv("DARLING_NONROOT") != NULL || geteuid() != 0)
+	{
+		ensureProcSymlink(prefix);
+	}
+
 	// TODO: Run /usr/libexec/makewhatis
 	const char* dirs[] = {
 		"/var/tmp",
@@ -741,13 +775,15 @@ int main(int argc, char** argv) {
 		snprintf(putOld, sizeof(putOld), "%s/proc", prefix);
 		if (geteuid() == 0)
 		{
-			snprintf(putOld, sizeof(putOld), "%s/proc", prefix);
-
 			// mount procfs for our new PID namespace
 			if (mount("proc", putOld, "proc", 0, "") != 0)
 			{
 				fprintf(stderr, "Cannot mount procfs: %s\n", strerror(errno));
 			}
+		}
+		else
+		{
+			ensureProcSymlink(prefix);
 		}
 
 		// drop our privileges now
