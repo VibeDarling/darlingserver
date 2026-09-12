@@ -279,8 +279,9 @@ timer_call_entry_dequeue(
 {
 	mpqueue_head_t  *old_mpqueue = mpqueue_for_timer_call(entry);
 
-	/* The entry was always on a queue */
-	assert(old_mpqueue != NULL);
+	if (old_mpqueue == NULL) {
+		return NULL;
+	}
 
 #if TIMER_ASSERT
 	if (!hw_lock_held((hw_lock_t)&entry->tc_lock)) {

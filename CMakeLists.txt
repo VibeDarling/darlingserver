@@ -176,6 +176,13 @@ endif()
 
 install(TARGETS darlingserver DESTINATION bin)
 
+if (ANDROID)
+	set_target_properties(darlingserver PROPERTIES
+		INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
+		BUILD_WITH_INSTALL_RPATH TRUE
+	)
+endif()
+
 #file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include/darlingserver")
 #create_symlink(
 #	"${DARLING_ROOT_RELATIVE_TO_SDK}/../../../src/darlingserver/include/darlingserver/rpc.h"
