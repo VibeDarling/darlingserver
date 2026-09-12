@@ -136,11 +136,11 @@ void suid_cred_notify(mach_msg_header_t* msg) {
 };
 
 boolean_t ml_get_interrupts_enabled(void) {
-	return TRUE;
+	return FALSE;
 };
 
 boolean_t ml_set_interrupts_enabled(boolean_t enable) {
-	return TRUE;
+	return FALSE;
 };
 
 boolean_t ml_delay_should_spin(uint64_t interval) {
