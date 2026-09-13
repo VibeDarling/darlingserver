@@ -545,7 +545,11 @@ static void ensureHomebrewSymlinks(const char* prefixPath)
 
 void darlingPreInit(const char* prefix)
 {
-	if (getenv("DARLING_NONROOT") != NULL || geteuid() != 0)
+	// This runs between temp_drop_privileges() and regain_privileges(), so geteuid() is
+	// never 0 here; check the saved set-user-ID to tell a temporary drop from non-root mode.
+	uid_t ruid, euid, suid;
+	bool hasRoot = getresuid(&ruid, &euid, &suid) == 0 && (ruid == 0 || euid == 0 || suid == 0);
+	if (getenv("DARLING_NONROOT") != NULL || !hasRoot)
 	{
 		ensureProcSymlink(prefix);
 	}
