@@ -292,6 +292,257 @@ static void ensureShSymlink(const char* prefixPath)
 	}
 }
 
+static void relativizeNanobrewSymlinks(const char* dirPath)
+{
+	DIR* dir = opendir(dirPath);
+	if (!dir) return;
+
+	struct dirent* de;
+	while ((de = readdir(dir)) != NULL)
+	{
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+
+		char binItem[4096];
+		snprintf(binItem, sizeof(binItem), "%s/%s", dirPath, de->d_name);
+		struct stat itemSt;
+		if (lstat(binItem, &itemSt) == 0 && S_ISLNK(itemSt.st_mode))
+		{
+			char itemTarget[4096];
+			ssize_t tlen = readlink(binItem, itemTarget, sizeof(itemTarget) - 1);
+			if (tlen > 0)
+			{
+				itemTarget[tlen] = '\0';
+				const char* pfxMatch = "/opt/nanobrew/prefix/";
+				size_t pfxLen = strlen(pfxMatch);
+				if (strncmp(itemTarget, pfxMatch, pfxLen) == 0)
+				{
+					char relTarget[4096];
+					snprintf(relTarget, sizeof(relTarget), "../%s", itemTarget + pfxLen);
+					unlink(binItem);
+					symlink(relTarget, binItem);
+				}
+			}
+		}
+	}
+	closedir(dir);
+}
+
+static void ensureHomebrewSymlinks(const char* prefixPath)
+{
+	char nanobrewBin[4096];
+	snprintf(nanobrewBin, sizeof(nanobrewBin), "%s/opt/nanobrew/prefix/bin", prefixPath);
+
+	struct stat st;
+	if (stat(nanobrewBin, &st) != 0 || !S_ISDIR(st.st_mode))
+		return;
+
+	char nanobrewOpt[4096];
+	snprintf(nanobrewOpt, sizeof(nanobrewOpt), "%s/opt/nanobrew/prefix/opt", prefixPath);
+	relativizeNanobrewSymlinks(nanobrewBin);
+	relativizeNanobrewSymlinks(nanobrewOpt);
+
+	// 1. Ensure /opt/homebrew -> nanobrew/prefix
+	char optDir[4096];
+	snprintf(optDir, sizeof(optDir), "%s/opt", prefixPath);
+	mkdir(optDir, 0755);
+
+	char optHomebrew[4096];
+	snprintf(optHomebrew, sizeof(optHomebrew), "%s/opt/homebrew", prefixPath);
+	if (lstat(optHomebrew, &st) == 0)
+	{
+		if (S_ISLNK(st.st_mode))
+		{
+			char target[512];
+			ssize_t len = readlink(optHomebrew, target, sizeof(target) - 1);
+			if (len > 0)
+			{
+				target[len] = '\0';
+				if (strcmp(target, "nanobrew/prefix") != 0)
+				{
+					unlink(optHomebrew);
+					symlink("nanobrew/prefix", optHomebrew);
+				}
+			}
+		}
+	}
+	else
+	{
+		symlink("nanobrew/prefix", optHomebrew);
+	}
+
+	// 2. Ensure /usr/local, /usr/local/bin, /usr/local/opt, /usr/local/Cellar
+	char usrLocalDir[4096];
+	snprintf(usrLocalDir, sizeof(usrLocalDir), "%s/usr/local", prefixPath);
+	mkdir(usrLocalDir, 0755);
+
+	char usrLocalBin[4096];
+	snprintf(usrLocalBin, sizeof(usrLocalBin), "%s/usr/local/bin", prefixPath);
+	mkdir(usrLocalBin, 0755);
+
+	char usrLocalOpt[4096];
+	snprintf(usrLocalOpt, sizeof(usrLocalOpt), "%s/usr/local/opt", prefixPath);
+	if (lstat(usrLocalOpt, &st) == 0)
+	{
+		if (S_ISDIR(st.st_mode))
+		{
+			DIR* d = opendir(usrLocalOpt);
+			if (d)
+			{
+				struct dirent* de;
+				bool has_real_content = false;
+				while ((de = readdir(d)) != NULL)
+				{
+					if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+						continue;
+					if (strcmp(de->d_name, "opt") == 0)
+					{
+						char dummy[4096];
+						snprintf(dummy, sizeof(dummy), "%s/opt", usrLocalOpt);
+						unlink(dummy);
+						continue;
+					}
+					has_real_content = true;
+					break;
+				}
+				closedir(d);
+				if (!has_real_content)
+				{
+					rmdir(usrLocalOpt);
+					symlink("../../opt/nanobrew/prefix/opt", usrLocalOpt);
+				}
+			}
+		}
+		else if (S_ISLNK(st.st_mode))
+		{
+			char target[512];
+			ssize_t len = readlink(usrLocalOpt, target, sizeof(target) - 1);
+			if (len > 0)
+			{
+				target[len] = '\0';
+				if (strcmp(target, "../../opt/nanobrew/prefix/opt") != 0 && strcmp(target, "/opt/nanobrew/prefix/opt") != 0)
+				{
+					unlink(usrLocalOpt);
+					symlink("../../opt/nanobrew/prefix/opt", usrLocalOpt);
+				}
+			}
+		}
+	}
+	else
+	{
+		symlink("../../opt/nanobrew/prefix/opt", usrLocalOpt);
+	}
+
+	char usrLocalCellar[4096];
+	snprintf(usrLocalCellar, sizeof(usrLocalCellar), "%s/usr/local/Cellar", prefixPath);
+	if (lstat(usrLocalCellar, &st) != 0)
+	{
+		symlink("../../opt/nanobrew/prefix/Cellar", usrLocalCellar);
+	}
+
+	// 3. Symlink all binaries from /opt/nanobrew/prefix/bin into /usr/local/bin
+	DIR* dir = opendir(nanobrewBin);
+	if (dir)
+	{
+		struct dirent* de;
+		while ((de = readdir(dir)) != NULL)
+		{
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+				continue;
+
+			char linkPath[4096];
+			snprintf(linkPath, sizeof(linkPath), "%s/%s", usrLocalBin, de->d_name);
+
+			char expectedTarget[4096];
+			snprintf(expectedTarget, sizeof(expectedTarget), "../../../opt/nanobrew/prefix/bin/%s", de->d_name);
+
+			if (lstat(linkPath, &st) == 0)
+			{
+				if (S_ISLNK(st.st_mode))
+				{
+					char curTarget[4096];
+					ssize_t len = readlink(linkPath, curTarget, sizeof(curTarget) - 1);
+					if (len > 0)
+					{
+						curTarget[len] = '\0';
+						if (strcmp(curTarget, expectedTarget) == 0)
+							continue;
+					}
+					unlink(linkPath);
+				}
+				else
+				{
+					continue;
+				}
+			}
+
+			symlink(expectedTarget, linkPath);
+		}
+		closedir(dir);
+	}
+
+	// 4. Python and Pip aliases and /usr/bin/python3
+	char nbPython3[4096];
+	snprintf(nbPython3, sizeof(nbPython3), "%s/python3", nanobrewBin);
+	if (lstat(nbPython3, &st) == 0)
+	{
+		char usrBinPython3[4096];
+		snprintf(usrBinPython3, sizeof(usrBinPython3), "%s/usr/bin/python3", prefixPath);
+		if (lstat(usrBinPython3, &st) != 0)
+		{
+			symlink("../../opt/nanobrew/prefix/bin/python3", usrBinPython3);
+		}
+
+		char usrLocalPython[4096];
+		snprintf(usrLocalPython, sizeof(usrLocalPython), "%s/python", usrLocalBin);
+		if (lstat(usrLocalPython, &st) != 0)
+		{
+			symlink("python3", usrLocalPython);
+		}
+	}
+
+	char nbPip3[4096];
+	snprintf(nbPip3, sizeof(nbPip3), "%s/pip3", nanobrewBin);
+	if (lstat(nbPip3, &st) == 0)
+	{
+		char usrLocalPip[4096];
+		snprintf(usrLocalPip, sizeof(usrLocalPip), "%s/pip", usrLocalBin);
+		if (lstat(usrLocalPip, &st) != 0)
+		{
+			symlink("pip3", usrLocalPip);
+		}
+	}
+
+	// 5. Ensure /etc/paths.d has 10-nanobrew and 20-homebrew
+	char pathsD[4096];
+	snprintf(pathsD, sizeof(pathsD), "%s/etc/paths.d", prefixPath);
+	mkdir(pathsD, 0755);
+
+	char nbPathFile[4096];
+	snprintf(nbPathFile, sizeof(nbPathFile), "%s/10-nanobrew", pathsD);
+	if (access(nbPathFile, F_OK) != 0)
+	{
+		FILE* f = fopen(nbPathFile, "w");
+		if (f)
+		{
+			fputs("/opt/nanobrew/prefix/bin\n", f);
+			fclose(f);
+		}
+	}
+
+	char brewPathFile[4096];
+	snprintf(brewPathFile, sizeof(brewPathFile), "%s/20-homebrew", pathsD);
+	if (access(brewPathFile, F_OK) != 0)
+	{
+		FILE* f = fopen(brewPathFile, "w");
+		if (f)
+		{
+			fputs("/opt/homebrew/bin\n", f);
+			fclose(f);
+		}
+	}
+}
+
 void darlingPreInit(const char* prefix)
 {
 	if (getenv("DARLING_NONROOT") != NULL || geteuid() != 0)
@@ -299,6 +550,7 @@ void darlingPreInit(const char* prefix)
 		ensureProcSymlink(prefix);
 	}
 	ensureShSymlink(prefix);
+	ensureHomebrewSymlinks(prefix);
 
 	// TODO: Run /usr/libexec/makewhatis
 	const char* dirs[] = {
