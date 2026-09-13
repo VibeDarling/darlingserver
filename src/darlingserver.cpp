@@ -263,12 +263,42 @@ static void ensureProcSymlink(const char* prefixPath)
 	}
 }
 
+static void ensureShSymlink(const char* prefixPath)
+{
+	char binDir[4096];
+	snprintf(binDir, sizeof(binDir), "%s/bin", prefixPath);
+	mkdir(binDir, 0755);
+
+	char shPath[4096];
+	char bashPath[4096];
+	struct stat st;
+	snprintf(shPath, sizeof(shPath), "%s/bin/sh", prefixPath);
+	snprintf(bashPath, sizeof(bashPath), "%s/bin/bash", prefixPath);
+
+	const char* target = "bash";
+	if (access(bashPath, X_OK) != 0)
+	{
+		char zshPath[4096];
+		snprintf(zshPath, sizeof(zshPath), "%s/bin/zsh", prefixPath);
+		if (access(zshPath, X_OK) == 0)
+			target = "zsh";
+	}
+
+	if (stat(shPath, &st) != 0)
+	{
+		if (lstat(shPath, &st) == 0)
+			unlink(shPath);
+		symlink(target, shPath);
+	}
+}
+
 void darlingPreInit(const char* prefix)
 {
 	if (getenv("DARLING_NONROOT") != NULL || geteuid() != 0)
 	{
 		ensureProcSymlink(prefix);
 	}
+	ensureShSymlink(prefix);
 
 	// TODO: Run /usr/libexec/makewhatis
 	const char* dirs[] = {
