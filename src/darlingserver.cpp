@@ -545,7 +545,11 @@ static void ensureHomebrewSymlinks(const char* prefixPath)
 
 void darlingPreInit(const char* prefix)
 {
-	if (getenv("DARLING_NONROOT") != NULL || geteuid() != 0)
+	// This runs between temp_drop_privileges() and regain_privileges(), so geteuid() is
+	// never 0 here; check the saved set-user-ID to tell a temporary drop from non-root mode.
+	uid_t ruid, euid, suid;
+	bool hasRoot = getresuid(&ruid, &euid, &suid) == 0 && (ruid == 0 || euid == 0 || suid == 0);
+	if (getenv("DARLING_NONROOT") != NULL || !hasRoot)
 	{
 		ensureProcSymlink(prefix);
 	}
@@ -804,7 +808,11 @@ static void perma_drop_privileges(uid_t uid, gid_t gid) {
 };
 
 static void regain_privileges() {
-	if (getuid() != 0 && geteuid() != 0) {
+	// temp_drop_privileges() leaves root only in the saved set-user-ID (real and effective
+	// are both the original user), so check all three: only a process that never had root
+	// (non-root mode) should skip regaining it.
+	uid_t ruid, euid, suid;
+	if (getresuid(&ruid, &euid, &suid) == 0 && ruid != 0 && euid != 0 && suid != 0) {
 		return;
 	}
 	if (seteuid(0) < 0) {
