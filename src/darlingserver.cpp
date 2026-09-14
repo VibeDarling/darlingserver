@@ -765,8 +765,13 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 			abort();
     	}
 		if (fchownat(-1, toPath.c_str(), fromStat.st_uid, fromStat.st_gid, AT_SYMLINK_NOFOLLOW) == -1) {
-			fprintf(stderr, "Failed to set owner for %s: %s\n", toPath.c_str(), strerror(errno));
-			abort();
+			// Without real root (non-root mode, or a user namespace where the libexec owner is
+			// unmapped) we cannot hand files to root; the prefix stays owned by the user instead.
+			bool realRoot = geteuid() == 0 && getenv("DARLING_ROOTLESS") == NULL;
+			if (realRoot || (errno != EPERM && errno != EINVAL)) {
+				fprintf(stderr, "Failed to set owner for %s: %s\n", toPath.c_str(), strerror(errno));
+				abort();
+			}
 		}
 		// POSIX said that AT_SYMLINK_NOFOLLOW is acceptable for links, but on Linux all calls with AT_SYMLINK_NOFOLLOW fails with ENOTSUP.
 		if (fchmodat(-1, toPath.c_str(), fromStat.st_mode & ALLPERMS, S_ISLNK(fromStat.st_mode) ? AT_SYMLINK_NOFOLLOW : 0) == -1) {
