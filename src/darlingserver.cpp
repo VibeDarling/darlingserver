@@ -59,33 +59,64 @@
 
 // TODO: most of the code here was ported over from startup/darling.c; we should C++-ify it.
 
-void fixPermissionsRecursive(const char* path, uid_t originalUID, gid_t originalGID)
+static void temp_drop_privileges(uid_t uid, gid_t gid);
+static void regain_privileges();
+
+// Opens a directory of the user's prefix for root-mode setup. The path is resolved with the user's
+// privileges; the directory must be owned by the user, or by root when rootOwnedOK.
+static int openPrefixDir(int dirFD, const char* path, int flags, bool rootOwnedOK, uid_t originalUID, gid_t originalGID)
 {
-	DIR* dir;
-	struct dirent* ent;
+	temp_drop_privileges(originalUID, originalGID);
+	int fd = openat(dirFD, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | flags);
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open directory %s: %s\n", path, strerror(errno));
+		exit(1);
+	}
+	regain_privileges();
 
-	if (geteuid() == 0 && chown(path, originalUID, originalGID) == -1)
-		fprintf(stderr, "Cannot chown %s: %s\n", path, strerror(errno));
+	struct stat st;
+	if (fstat(fd, &st) != 0 || (st.st_uid != originalUID && !(rootOwnedOK && st.st_uid == 0))) {
+		fprintf(stderr, "%s is not owned by the invoking user\n", path);
+		exit(1);
+	}
+	return fd;
+}
 
-	dir = opendir(path);
-	if (!dir)
+// Run as the user before the overlay is mounted: creates each directory of the lower tree in the upper one,
+// so the merged prefix directories belong to the user without root changing any owner. Takes ownership of lowerFD.
+static void mirrorDirectoryTree(int lowerFD, int upperFD)
+{
+	DIR* dir = fdopendir(lowerFD);
+	if (!dir) {
+		close(lowerFD);
 		return;
+	}
 
+	struct dirent* ent;
 	while ((ent = readdir(dir)) != NULL)
 	{
-		if (ent->d_type == DT_DIR)
-		{
-			char* subdir;
+		struct stat st;
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0
+			|| fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISDIR(st.st_mode))
+			continue;
 
-			if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-				continue;
+		// Undo the umask through the opened directory, never by resolving the name again.
+		bool created = mkdirat(upperFD, ent->d_name, 0700) == 0;
+		if (!created && errno != EEXIST)
+			fprintf(stderr, "Cannot create prefix directory %s: %s\n", ent->d_name, strerror(errno));
 
-			subdir = (char*) malloc(strlen(path) + 2 + strlen(ent->d_name));
-			sprintf(subdir, "%s/%s", path, ent->d_name);
-
-			fixPermissionsRecursive(subdir, originalUID, originalGID);
-
-			free(subdir);
+		int lowerChild = openat(dirfd(dir), ent->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		int upperChild = openat(upperFD, ent->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		if (lowerChild >= 0 && upperChild >= 0)
+			mirrorDirectoryTree(lowerChild, upperChild);
+		else if (lowerChild >= 0)
+			close(lowerChild);
+		if (upperChild >= 0) {
+			if (created && fchmod(upperChild, st.st_mode & ALLPERMS) != 0) {
+				fprintf(stderr, "Cannot set prefix directory permissions: %s\n", strerror(errno));
+				exit(1);
+			}
+			close(upperChild);
 		}
 	}
 
@@ -812,6 +843,16 @@ static int compareTimespec(const timespec& a, const timespec& b) {
 	}
 }
 
+// The copy runs with the user's privileges, and entries an earlier root-mode copy left
+// root-owned can't be updated; skip them instead of aborting the whole copy.
+static bool skipUnwritableEntry(const char* what, const std::string& path) {
+	if (errno != EPERM && errno != EACCES) {
+		return false;
+	}
+	fprintf(stderr, "Skipping %s: cannot %s: %s\n", path.c_str(), what, strerror(errno));
+	return true;
+}
+
 static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 	struct stat fromStat, toStat;
 	if (lstat(fromPath.c_str(), &fromStat) == -1) {
@@ -834,6 +875,9 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 		} else {
 			if (!destinationExists) {
 				if (mkdir(toPath.c_str(), fromStat.st_mode & ALLPERMS) == -1) {
+					if (skipUnwritableEntry("create the directory", toPath)) {
+						return;
+					}
 					fprintf(stderr, "Failed to create directory %s: %s\n", toPath.c_str(), strerror(errno));
 					abort();
 				}
@@ -890,6 +934,9 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 					updateAttributes = true;
 				} else if (compareResult == 1) {
 					if (unlink(toPath.c_str()) == -1) {
+						if (skipUnwritableEntry("replace the file", toPath)) {
+							return;
+						}
 						fprintf(stderr, "Failed to delete old destination file %s: %s\n", toPath.c_str(), strerror(errno));
 						abort();
 					}
@@ -913,21 +960,22 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 			fromStat.st_mtim
 		};
 		if (utimensat(-1, toPath.c_str(), times, AT_SYMLINK_NOFOLLOW) == -1) {
+			if (skipUnwritableEntry("set the timestamp", toPath)) {
+				return;
+			}
 			fprintf(stderr, "Failed to set timestamp for %s: %s\n", toPath.c_str(), strerror(errno));
 			abort();
     	}
 		if (fchownat(-1, toPath.c_str(), fromStat.st_uid, fromStat.st_gid, AT_SYMLINK_NOFOLLOW) == -1) {
-			// Without real root (non-root mode, or a user namespace where the libexec owner is
-			// unmapped) we cannot hand files to root; the prefix stays owned by the user instead.
-			bool realRoot = geteuid() == 0 && getenv("DARLING_ROOTLESS") == NULL;
-			if (realRoot || (errno != EPERM && errno != EINVAL)) {
+			// The copy runs as the user, who cannot hand files to root; the prefix stays owned by the user instead.
+			if (errno != EPERM && errno != EINVAL) {
 				fprintf(stderr, "Failed to set owner for %s: %s\n", toPath.c_str(), strerror(errno));
 				abort();
 			}
 		}
 		// POSIX said that AT_SYMLINK_NOFOLLOW is acceptable for links, but on Linux all calls with AT_SYMLINK_NOFOLLOW fails with ENOTSUP.
 		if (fchmodat(-1, toPath.c_str(), fromStat.st_mode & ALLPERMS, S_ISLNK(fromStat.st_mode) ? AT_SYMLINK_NOFOLLOW : 0) == -1) {
-			if (!(S_ISLNK(fromStat.st_mode) && (errno == ENOTSUP))) {
+			if (!(S_ISLNK(fromStat.st_mode) && (errno == ENOTSUP)) && !skipUnwritableEntry("set the permissions", toPath)) {
 				fprintf(stderr, "Failed to set permissions for %s: %s\n", toPath.c_str(), strerror(errno));
 				abort();
 			}
@@ -991,6 +1039,15 @@ static void regain_privileges() {
 	}
 };
 
+// Copies as the user, so that root never writes through links inside the user's prefix.
+static void copyLibexecIntoPrefix(const char* prefix, uid_t originalUID, gid_t originalGID) {
+	std::string fromPath = DarlingServer::Config::getLibexecPath();
+	std::string toPath = prefix;
+	temp_drop_privileges(originalUID, originalGID);
+	copyAndSetAttributes(fromPath, toPath);
+	regain_privileges();
+}
+
 #if DSERVER_ASAN
 static void handle_sigusr1(int signum) {
 	__lsan_do_recoverable_leak_check();
@@ -1004,14 +1061,12 @@ int main(int argc, char** argv) {
 	int pipefd = -1;
 	bool fix_permissions = false;
 	pid_t launchdGlobalPID = -1;
-	size_t prefix_length = 0;
 	struct rlimit default_limit;
 	struct rlimit increased_limit;
 	FILE* nr_open_file = NULL;
 	int childWaitFDs[2];
 	struct rlimit core_limit;
 
-	char *opts;
 	char putOld[4096];
 	char *p;
 
@@ -1036,7 +1091,10 @@ int main(int argc, char** argv) {
 		fix_permissions = true;
 	}
 
-	prefix_length = strlen(prefix);
+	// Without trailing slashes, so the parent/name split works and ".workdir" is the prefix's sibling.
+	std::string prefixPath = prefix;
+	while (prefixPath.size() > 1 && prefixPath.back() == '/')
+		prefixPath.pop_back();
 
 
 	// temporarily drop privileges to perform some prefix work
@@ -1126,55 +1184,70 @@ int main(int argc, char** argv) {
 			exit(1);
 		}
 
+		// Overlayfs writes into the upper and work directories as root, so mount through
+		// descriptors checked to be the user's own directories, not through their paths.
+		// Both come from one parent descriptor, so the work directory really is the prefix's sibling.
+		size_t slash = prefixPath.rfind('/');
+		std::string parentPath = slash == std::string::npos ? "." : (slash == 0 ? "/" : prefixPath.substr(0, slash));
+		std::string upperName = prefixPath.substr(slash + 1);
+		temp_drop_privileges(originalUID, originalGID);
+		int parentFD = open(parentPath.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+		if (parentFD < 0) {
+			fprintf(stderr, "Cannot open directory %s: %s\n", parentPath.c_str(), strerror(errno));
+			exit(1);
+		}
+		regain_privileges();
+		int upperFD = openPrefixDir(parentFD, upperName.c_str(), O_NOFOLLOW, false, originalUID, originalGID);
+		// The launcher creates .workdir, so it is never a symlink; launchers before the
+		// user-owned prefix changes created it as root.
+		int workFD = openPrefixDir(parentFD, (upperName + ".workdir").c_str(), O_NOFOLLOW, true, originalUID, originalGID);
+		close(parentFD);
 		std::string libexec = DarlingServer::Config::getLibexecPath();
-		opts = (char*) malloc(strlen(prefix)*2 + libexec.length() + 100);
 
-		const char* opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s.workdir,index=off";
-
-		sprintf(opts, opts_fmt, libexec.c_str(), prefix, prefix);
-
-		// Mount overlay onto our prefix
-		if (mount("overlay", prefix, "overlay", 0, opts) != 0)
-		{
-			if (errno == EINVAL) {
-				opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s.workdir";
-				sprintf(opts, opts_fmt, libexec.c_str(), prefix, prefix);
-				if (mount("overlay", prefix, "overlay", 0, opts) == 0) {
-					goto mount_ok;
-				}
+		// On prefix creation, give the user their own copies of the lower directories.
+		if (fix_permissions) {
+			temp_drop_privileges(originalUID, originalGID);
+			int lowerFD = open(libexec.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+			if (lowerFD < 0) {
+				fprintf(stderr, "Cannot open directory %s: %s\n", libexec.c_str(), strerror(errno));
+				exit(1);
 			}
+			mirrorDirectoryTree(lowerFD, upperFD);
+			regain_privileges();
+		}
+
+		// Overlayfs empties an existing work/ in its workdir as root, so give it a directory only root can write to.
+		const char overlayWorkName[] = "darlingserver";
+		if (mkdirat(workFD, overlayWorkName, 0700) != 0 && errno != EEXIST) {
+			fprintf(stderr, "Cannot create %s.workdir/%s: %s\n", upperName.c_str(), overlayWorkName, strerror(errno));
+			exit(1);
+		}
+		int overlayWorkFD = openat(workFD, overlayWorkName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		struct stat overlayWorkStat;
+		if (overlayWorkFD < 0 || fstat(overlayWorkFD, &overlayWorkStat) != 0
+			|| overlayWorkStat.st_uid != 0 || (overlayWorkStat.st_mode & 077) != 0)
+		{
+			fprintf(stderr, "%s.workdir/%s is not a private root directory\n", upperName.c_str(), overlayWorkName);
+			exit(1);
+		}
+		close(workFD);
+
+		std::string target = "/proc/self/fd/" + std::to_string(upperFD);
+		std::string opts = "lowerdir=" + libexec
+			+ ",upperdir=" + target
+			+ ",workdir=/proc/self/fd/" + std::to_string(overlayWorkFD);
+
+		if (mount("overlay", target.c_str(), "overlay", 0, (opts + ",index=off").c_str()) != 0
+			&& (errno != EINVAL || mount("overlay", target.c_str(), "overlay", 0, opts.c_str()) != 0))
+		{
 			fprintf(stderr, "Cannot mount overlay: %s; falling back to direct copy\n", strerror(errno));
-			std::string fromPath = libexec;
-			std::string toPath = prefix;
-			copyAndSetAttributes(fromPath, toPath);
+			copyLibexecIntoPrefix((prefixPath + "/").c_str(), originalUID, originalGID);
 		}
 
-	mount_ok:
-		free(opts);
+		close(upperFD);
+		close(overlayWorkFD);
 	} else {
-		std::string fromPath = DarlingServer::Config::getLibexecPath();
-		std::string toPath = prefix;
-		copyAndSetAttributes(fromPath, toPath);
-	}
-
-	// This is executed once at prefix creation
-	if (fix_permissions) {
-		const char* extra_paths[] = {
-			"/private/etc/passwd",
-			"/private/etc/master.passwd",
-			"/private/etc/group",
-		};
-		char path[4096];
-
-		fixPermissionsRecursive(prefix, originalUID, originalGID);
-
-		path[sizeof(path) - 1] = '\0';
-		strncpy(path, prefix, sizeof(path) - 1);
-		for (size_t i = 0; i < sizeof(extra_paths) / sizeof(*extra_paths); ++i) {
-			path[prefix_length] = '\0';
-			strncat(path, extra_paths[i], sizeof(path) - 1);
-			fixPermissionsRecursive(path, originalUID, originalGID);
-		}
+		copyLibexecIntoPrefix((prefixPath + "/").c_str(), originalUID, originalGID);
 	}
 
 	// temporarily drop privileges and do some prefix work
@@ -1219,14 +1292,19 @@ int main(int argc, char** argv) {
 			// continue anyway
 		}
 
-		snprintf(putOld, sizeof(putOld), "%s/proc", prefix);
 		if (geteuid() == 0)
 		{
-			// mount procfs for our new PID namespace
-			if (mount("proc", putOld, "proc", 0, "") != 0)
+			// mount procfs for our new PID namespace, through the user's prefix rather than its path
+			int prefixFD = openPrefixDir(AT_FDCWD, prefixPath.c_str(), O_NOFOLLOW, false, originalUID, originalGID);
+			int procFD = openat(prefixFD, "proc", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+			snprintf(putOld, sizeof(putOld), "/proc/self/fd/%d", procFD);
+			if (procFD < 0 || mount("proc", putOld, "proc", 0, "") != 0)
 			{
 				fprintf(stderr, "Cannot mount procfs: %s\n", strerror(errno));
 			}
+			if (procFD >= 0)
+				close(procFD);
+			close(prefixFD);
 		}
 		else
 		{
