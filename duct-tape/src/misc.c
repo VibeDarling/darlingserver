@@ -172,9 +172,8 @@ fls(unsigned int mask)
 #include <kern/simple_lock.h>
 
 // PAGE_SHIFT_CONST is extern on ARM64 (variable page size support in XNU).
-// This is duct-tape's own allocation granularity, not the page size guests see:
-// that comes from the commpage, which mldr fills in from the host and which is
-// 16K on some of them. The two deliberately differ.
+// dtape_memory_init() replaces this with the host page shift before anything
+// reads PAGE_SIZE; 12 is only the value it holds until then.
 int PAGE_SHIFT_CONST = 12;
 
 // ARM simple lock init (normally in arm/locks_arm.c).

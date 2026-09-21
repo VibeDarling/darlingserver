@@ -72,7 +72,12 @@ int ftruncate(int fd, off_t length);
 #define MFD_CLOEXEC 0x1
 
 void dtape_memory_init(void) {
-
+#if __aarch64__ || __arm64__
+	// On x86_64 PAGE_SHIFT is a 12 macro and the host page size is 4K, so the two
+	// agree by construction; deriving the ARM64 variable is what buys the same
+	// agreement on a 16K host. dtape_init() runs this before any PAGE_SIZE user.
+	PAGE_SHIFT_CONST = __builtin_ctzl(sysconf(_SC_PAGESIZE));
+#endif
 };
 
 static uint64_t dtape_byte_count_to_page_count_round_up(uint64_t byte_count) {

@@ -41,11 +41,12 @@ void dtape_mk_timer_init(void);
 void dtape_init(const dtape_hooks_t* hooks) {
 	dtape_hooks = hooks;
 
-	dtape_log_debug("dtape_processor_init");
-	dtape_processor_init();
-
+	// first: it settles PAGE_SHIFT_CONST, which everything below sizes itself from
 	dtape_log_debug("dtape_memory_init");
 	dtape_memory_init();
+
+	dtape_log_debug("dtape_processor_init");
+	dtape_processor_init();
 
 	ipc_space_zone = zone_create("ipc spaces", sizeof(struct ipc_space), ZC_NOENCRYPT);
 	ipc_kmsg_zone = zone_create("ipc kmsgs", IKM_SAVED_KMSG_SIZE, ZC_CACHING | ZC_ZFREE_CLEARMEM);
