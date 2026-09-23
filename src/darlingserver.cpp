@@ -36,6 +36,7 @@
 #include <sys/resource.h>
 #include <iostream>
 #include <linux/sched.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/signal.h>
 #include <filesystem>
@@ -1259,8 +1260,9 @@ int main(int argc, char** argv) {
 	write(pipefd, ".", 1);
 	close(pipefd);
 
-	if (pipe(childWaitFDs) != 0) {
-		std::cerr << "Failed to create child waiting pipe: " << strerror(errno) << std::endl;
+	// The child reports that its namespace is set up through [0]; the parent gives it the green light through [1].
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, childWaitFDs) != 0) {
+		std::cerr << "Failed to create child waiting socket pair: " << strerror(errno) << std::endl;
 		exit(1);
 	}
 
@@ -1300,7 +1302,8 @@ int main(int argc, char** argv) {
 			snprintf(putOld, sizeof(putOld), "/proc/self/fd/%d", procFD);
 			if (procFD < 0 || mount("proc", putOld, "proc", 0, "") != 0)
 			{
-				fprintf(stderr, "Cannot mount procfs: %s\n", strerror(errno));
+				fprintf(stderr, "Cannot mount procfs on %s/proc, which must be a directory: %s\n", prefix, strerror(errno));
+				exit(1);
 			}
 			if (procFD >= 0)
 				close(procFD);
@@ -1310,6 +1313,7 @@ int main(int argc, char** argv) {
 		{
 			ensureProcSymlink(prefix);
 		}
+		write(childWaitFDs[0], ".", 1);
 
 		// drop our privileges now
 		perma_drop_privileges(originalUID, originalGID);
@@ -1331,6 +1335,11 @@ int main(int argc, char** argv) {
 
 	// this is the parent
 	close(childWaitFDs[0]);
+	char childStatus;
+	if (read(childWaitFDs[1], &childStatus, 1) != 1) {
+		fprintf(stderr, "launchd's process failed to set up its namespace\n");
+		exit(1);
+	}
 
 	// drop our privileges
 	perma_drop_privileges(originalUID, originalGID);
