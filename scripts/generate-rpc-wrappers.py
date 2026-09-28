@@ -486,12 +486,6 @@ calls = [
 		('nsec', 'uint32_t'),
 	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | ALLOW_INTERRUPTIONS),
 
-	('mach_generate_activity_id', [
-		('count', 'uint32_t'),
-	], [
-		('activity_id', 'uint64_t'),
-	]),
-
 	#
 	# mk_timer traps
 	#
@@ -649,6 +643,14 @@ calls = [
 		('message_count', 'uint64_t'),
 		('fd', '@fd'),
 	], UNMANAGED_CALL),
+
+	# Append new calls to preserve existing wire call numbers. Let XNU
+	# validate the count and copy the result into the calling task.
+	('mach_generate_activity_id', [
+		('target', 'uint32_t'),
+		('count', 'int32_t'),
+		('activity_id', 'uint64_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
 ]
 
 ALLOWED_PRIVATE_TYPES = [
