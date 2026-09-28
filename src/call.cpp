@@ -311,6 +311,7 @@ void DarlingServer::Call::Checkin::processCall() {
 
 void DarlingServer::Call::Checkout::processCall() {
 	int code = 0;
+	bool threadDied = false;
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
@@ -370,6 +371,7 @@ void DarlingServer::Call::Checkout::processCall() {
 				}
 			} else {
 				thread->notifyDead();
+				threadDied = true;
 
 				// if this was the last thread in the process, it'll be automatically unregistered
 			}
@@ -380,9 +382,17 @@ void DarlingServer::Call::Checkout::processCall() {
 		code = -ESRCH;
 	}
 
-	// clear the thread pointer so that the reply will be sent directly through the server
-	// (otherwise, we would attempt to send it through the thread, which is now dead)
-	_thread.reset();
+	if (threadDied) {
+		// A dead thread cannot send its reply, so reproduce the active-call cleanup
+		// normally performed by Thread::pushCallReply before replying directly.
+		auto self = shared_from_this();
+		if (auto thread = _thread.lock()) {
+			thread->deactivateCall(self);
+		}
+		_thread.reset();
+		_sendReply(code);
+		return;
+	}
 
 	_sendReply(code);
 };
