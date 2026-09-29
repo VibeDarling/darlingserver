@@ -17,11 +17,17 @@ Dir.mktmpdir('server-ptrace-cleanup-') do |dir|
     #include <sys/uio.h>
     enum { PTRACE_ATTACH, PTRACE_DETACH, PTRACE_GETREGS, PTRACE_GETREGSET, NT_PRSTATUS };
     struct user_regs_struct { uintptr_t sp,rsp; };
-    static int detach_count,fail_registers;
-    static int waitpid(int id,int *status,int flags) { *status=0; return id; }
+    static int detach_count,fail_registers,wait_calls,stopped;
+    static int waitpid(int id,int *status,int flags) {
+      if (#{ARGV[1]=='--interrupted-wait' ? 'true' : 'false'} && wait_calls++==0) { errno=EINTR; return -1; }
+      stopped=1; *status=0; return id;
+    }
     static long ptrace(int request,int id,void *address,void *data) {
       if(request==PTRACE_ATTACH) return 0;
-      if(request==PTRACE_DETACH) { detach_count++; return 0; }
+      if(request==PTRACE_DETACH) {
+        if(!stopped) { errno=ESRCH; return -1; }
+        detach_count++; return 0;
+      }
       if(fail_registers) { errno=EIO; return -1; }
       auto *regs=request==PTRACE_GETREGSET ?
           static_cast<user_regs_struct *>(static_cast<iovec *>(data)->iov_base) :
@@ -30,7 +36,7 @@ Dir.mktmpdir('server-ptrace-cleanup-') do |dir|
     }
     int main() {
       for(int failing=0;failing<2;failing++) {
-        fail_registers=failing; detach_count=0;
+        fail_registers=failing; detach_count=wait_calls=stopped=0;
         std::vector<int> ids={123}; int chosenId=-1;
         intptr_t nearest=std::numeric_limits<intptr_t>::max();
         void *stackHint=reinterpret_cast<void *>(0x1100);
