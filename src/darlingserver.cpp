@@ -1159,6 +1159,14 @@ int main(int argc, char** argv) {
 		exit(1);
 	}
 
+	// systemd marks / as MS_SHARED and the new namespace inherits that, so without this the
+	// /dev/shm tmpfs and overlay mounts below would propagate back into the host's namespace.
+	if (geteuid() == 0 && mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0)
+	{
+		fprintf(stderr, "Cannot remount / as slave: %s\n", strerror(errno));
+		exit(1);
+	}
+
 	int shmMountFlags = MS_NOSUID | MS_NODEV;
 	// Workaround for dumb Microsoft bug: https://github.com/microsoft/WSL/issues/8777
 	if (!isOnWsl1())
@@ -1177,14 +1185,6 @@ int main(int argc, char** argv) {
 	}
 
 	if (shouldUseOverlayFs() && geteuid() == 0) {
-		// Because systemd marks / as MS_SHARED and we would inherit this into the overlay mount,
-		// causing it not to be unmounted once the init process dies.
-		if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0)
-		{
-			fprintf(stderr, "Cannot remount / as slave: %s\n", strerror(errno));
-			exit(1);
-		}
-
 		// Overlayfs writes into the upper and work directories as root, so mount through
 		// descriptors checked to be the user's own directories, not through their paths.
 		// Both come from one parent descriptor, so the work directory really is the prefix's sibling.
