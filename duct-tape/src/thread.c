@@ -610,6 +610,14 @@ wait_result_t thread_block(thread_continue_t continuation) {
 boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
 	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
 	thread->xnu_thread.wait_result = wresult;
+	// Match XNU's wait-timer cancellation. A callback already dequeued still
+	// owns its active count, but must not time out a subsequent unrelated wait.
+	if (thread->xnu_thread.wait_timer_is_set) {
+		if (timer_call_cancel(&thread->xnu_thread.wait_timer)) {
+			thread->xnu_thread.wait_timer_active--;
+		}
+		thread->xnu_thread.wait_timer_is_set = FALSE;
+	}
 	dtape_hooks->thread_resume(thread->context);
 	return TRUE;
 };
