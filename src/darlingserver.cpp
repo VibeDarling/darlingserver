@@ -740,8 +740,9 @@ void darlingPreInit(const char* prefix)
 	ensureHomebrewSymlinks(prefix);
 
 	// TODO: Run /usr/libexec/makewhatis
+	// Clear runtime state, not /var/tmp files that applications may need
+	// across separate server invocations using the same prefix.
 	const char* dirs[] = {
-		"/var/tmp",
 		"/var/run"
 	};
 
