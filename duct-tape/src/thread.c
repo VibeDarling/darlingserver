@@ -33,6 +33,8 @@
 
 #define LINUX_SI_USER 0
 #define LINUX_SI_KERNEL 0x80
+#define LINUX_TRAP_BRKPT 1
+#define LINUX_TRAP_TRACE 2
 #define LINUX_TRAP_HWBKPT 4
 
 #define LINUX_SIGSEGV 11
@@ -365,7 +367,14 @@ void dtape_thread_process_signal(dtape_thread_t* thread, int bsd_signal_number, 
 #if defined(__aarch64__)
 			codes[0] = EXC_ARM_BREAKPOINT;
 #else
-			codes[0] = (code == LINUX_SI_KERNEL) ? EXC_I386_BPT : EXC_I386_SGL;
+			dtape_log_warning("SIGTRAP received in darlingserver, linux si_code=%d", code);
+			if (code == LINUX_TRAP_BRKPT || code == LINUX_SI_KERNEL) {
+				codes[0] = EXC_I386_BPT;
+			} else if (code == LINUX_TRAP_TRACE) {
+				codes[0] = EXC_I386_SGL;
+			} else {
+				codes[0] = EXC_I386_BPT; // default to breakpoint for other/unknown si_codes
+			}
 #endif
 
 			if (code == LINUX_TRAP_HWBKPT) {

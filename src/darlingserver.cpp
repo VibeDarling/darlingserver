@@ -1357,6 +1357,9 @@ int main(int argc, char** argv) {
 	perma_drop_privileges(originalUID, originalGID);
 	prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
 
+	// Ignore SIGPIPE so closed sockets/pipes return EPIPE instead of killing the server
+	signal(SIGPIPE, SIG_IGN);
+
 #if DSERVER_ASAN
 	// set up a signal handler to print leak info
 	struct sigaction leak_info_action;
@@ -1374,7 +1377,13 @@ int main(int argc, char** argv) {
 	close(childWaitFDs[1]);
 
 	// start the main loop
-	server->start();
+	try {
+		server->start();
+	} catch (const std::exception& e) {
+		std::cerr << "=== DARLINGSERVER CRASHED WITH EXCEPTION: " << e.what() << " ===" << std::endl;
+	} catch (...) {
+		std::cerr << "=== DARLINGSERVER CRASHED WITH UNKNOWN EXCEPTION ===" << std::endl;
+	}
 
 	// this should never happen
 	std::cerr << "Server exited main loop!" << std::endl;
