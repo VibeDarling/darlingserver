@@ -99,6 +99,8 @@
 
 #include <security/mac_mach_internal.h>
 
+static struct ipc_port *g_system_bootstrap_port = IP_NULL;
+
 #if CONFIG_CSR
 #include <sys/csr.h>
 #endif
@@ -226,7 +228,11 @@ ipc_task_init(
 		assert(kr == KERN_SUCCESS);
 		task->itk_host = port;
 
-		task->itk_bootstrap = IP_NULL;
+		if (IP_VALID(g_system_bootstrap_port)) {
+			task->itk_bootstrap = ipc_port_copy_send(g_system_bootstrap_port);
+		} else {
+			task->itk_bootstrap = IP_NULL;
+		}
 		task->itk_seatbelt = IP_NULL;
 		task->itk_gssd = IP_NULL;
 		task->itk_task_access = IP_NULL;
@@ -263,8 +269,13 @@ ipc_task_init(
 		task->itk_host =
 		    ipc_port_copy_send(parent->itk_host);
 
-		task->itk_bootstrap =
-		    ipc_port_copy_send(parent->itk_bootstrap);
+		if (IP_VALID(parent->itk_bootstrap)) {
+			task->itk_bootstrap = ipc_port_copy_send(parent->itk_bootstrap);
+		} else if (IP_VALID(g_system_bootstrap_port)) {
+			task->itk_bootstrap = ipc_port_copy_send(g_system_bootstrap_port);
+		} else {
+			task->itk_bootstrap = IP_NULL;
+		}
 
 		task->itk_seatbelt =
 		    ipc_port_copy_send(parent->itk_seatbelt);
@@ -1707,7 +1718,13 @@ task_get_special_port_internal(
 		break;
 
 	case TASK_BOOTSTRAP_PORT:
-		port = ipc_port_copy_send(task->itk_bootstrap);
+		if (IP_VALID(task->itk_bootstrap)) {
+			port = ipc_port_copy_send(task->itk_bootstrap);
+		} else if (IP_VALID(g_system_bootstrap_port)) {
+			port = ipc_port_copy_send(g_system_bootstrap_port);
+		} else {
+			port = IP_NULL;
+		}
 		itk_unlock(task);
 		break;
 
@@ -1957,6 +1974,11 @@ task_set_special_port_internal(
 	case TASK_BOOTSTRAP_PORT:
 		old = task->itk_bootstrap;
 		task->itk_bootstrap = port;
+		if (IP_VALID(port)) {
+			if (!IP_VALID(g_system_bootstrap_port)) {
+				g_system_bootstrap_port = ipc_port_copy_send(port);
+			}
+		}
 		break;
 
 	/* Never allow overwrite of seatbelt port */
