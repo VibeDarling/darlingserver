@@ -218,6 +218,10 @@ bool dtape_task_try_resume(dtape_task_t* task) {
 };
 
 void task_deallocate(task_t xtask) {
+	if (xtask == TASK_NULL) {
+		return;
+	}
+
 	dtape_task_t* task = dtape_task_for_xnu_task(xtask);
 	os_ref_count_t count = os_ref_release(&xtask->ref_count);
 	if (count > 0) {
@@ -300,11 +304,18 @@ kern_return_t task_get_state(task_t  task, int flavor, thread_state_t state, mac
 };
 
 kern_return_t task_info(task_t xtask, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t* task_info_count) {
+	if (xtask == TASK_NULL) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
 	dtape_task_t* task = dtape_task_for_xnu_task(xtask);
 
 	switch (flavor) {
 		case TASK_BASIC_INFO_32:
 		case TASK_BASIC_INFO_64:
+#ifdef TASK_BASIC_INFO_64_2
+		case TASK_BASIC_INFO_64_2:
+#endif
 		case MACH_TASK_BASIC_INFO: {
 			uint64_t utimeus;
 			uint64_t stimeus;
@@ -350,6 +361,25 @@ kern_return_t task_info(task_t xtask, task_flavor_t flavor, task_info_t task_inf
 				info->system_time.seconds = stimeus / USEC_PER_SEC;
 				info->system_time.microseconds = stimeus % USEC_PER_SEC;
 				info->policy = 0;
+#ifdef TASK_BASIC_INFO_64_2
+			} else if (flavor == TASK_BASIC_INFO_64_2) {
+				struct task_basic_info_64_2* info = (void*)task_info_out;
+
+				if (*task_info_count < TASK_BASIC_INFO_64_2_COUNT) {
+					return KERN_INVALID_ARGUMENT;
+				}
+
+				*task_info_count = TASK_BASIC_INFO_64_2_COUNT;
+
+				info->suspend_count = task->xnu_task.user_stop_count;
+				info->virtual_size = mem_info.virtual_size;
+				info->resident_size = mem_info.resident_size;
+				info->user_time.seconds = utimeus / USEC_PER_SEC;
+				info->user_time.microseconds = utimeus % USEC_PER_SEC;
+				info->system_time.seconds = stimeus / USEC_PER_SEC;
+				info->system_time.microseconds = stimeus % USEC_PER_SEC;
+				info->policy = 0;
+#endif
 			} else {
 				struct mach_task_basic_info* info = (void*)task_info_out;
 
@@ -521,7 +551,9 @@ kern_return_t task_info(task_t xtask, task_flavor_t flavor, task_info_t task_inf
 		};
 
 		default:
-			dtape_stub_unsafe("unimplemented flavor");
+			// the flavor is guest-controlled: reject it as XNU does, never abort the server
+			dtape_log_debug("%s: unsupported flavor %u", __FUNCTION__, flavor);
+			return KERN_INVALID_ARGUMENT;
 	}
 };
 
