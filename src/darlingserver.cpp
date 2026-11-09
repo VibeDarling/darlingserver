@@ -154,6 +154,26 @@ const char* xdgDirectory(const char* name)
 	return dir;
 }
 
+// Gives a home what a new macOS account gets: what it lacks of
+// /System/Library/User Template (Library/Preferences, which apps write into
+// without checking, among it). Nothing is replaced, and links (the XDG
+// folders, LinuxHome) are not followed.
+static void fillFromUserTemplate(const std::filesystem::path& from, const std::filesystem::path& to)
+{
+	std::error_code ec;
+	for (const auto& entry : std::filesystem::directory_iterator(from, ec)) {
+		const auto target = to / entry.path().filename();
+		if (std::filesystem::is_symlink(std::filesystem::symlink_status(target, ec)))
+			continue;
+		if (entry.is_directory(ec) && !entry.is_symlink(ec)) {
+			std::filesystem::create_directory(target, ec);
+			fillFromUserTemplate(entry.path(), target);
+		} else if (entry.is_regular_file(ec)) {
+			std::filesystem::copy_file(entry.path(), target, std::filesystem::copy_options::skip_existing, ec);
+		}
+	}
+}
+
 void setupUserHome(const char* prefix, uid_t originalUID)
 {
 	char buf[4096], buf2[4096];
@@ -227,6 +247,9 @@ void setupUserHome(const char* prefix, uid_t originalUID)
 		unlink(buf);
 		symlink(buf2, buf);
 	}
+
+	snprintf(buf, sizeof(buf), "%s/Users/%s", prefix, login);
+	fillFromUserTemplate(DarlingServer::Config::getLibexecPath() + "/System/Library/User Template", buf);
 }
 
 void setupCoredumpPattern(void)
@@ -894,6 +917,19 @@ static void copyAndSetAttributes(std::string& fromPath, std::string& toPath) {
 	}
 
 	if (S_ISDIR(fromStat.st_mode)) {
+		// A link an older install left where the install now has a directory
+		// (e.g. usr/share/zoneinfo, a link to the host's, which Android lacks)
+		// gives way to the directory, as an older file gives way to a newer one.
+		if (destinationExists && S_ISLNK(toStat.st_mode) && compareTimespec(fromStat.st_mtim, toStat.st_mtim) == 1) {
+			if (unlink(toPath.c_str()) == -1) {
+				if (skipUnwritableEntry("replace the link", toPath)) {
+					return;
+				}
+				fprintf(stderr, "Failed to delete old link %s: %s\n", toPath.c_str(), strerror(errno));
+				abort();
+			}
+			destinationExists = false;
+		}
 		if (destinationExists && !S_ISDIR(toStat.st_mode)) {
 			return;
 		} else {
