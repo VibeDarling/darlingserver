@@ -1129,6 +1129,10 @@ int main(int argc, char** argv) {
 	int pipefd = -1;
 	bool fix_permissions = false;
 	pid_t launchdGlobalPID = -1;
+
+	// The launcher recognizes a running server by its name, and in an Android
+	// app this file is libdarlingserver.so.
+	prctl(PR_SET_NAME, "darlingserver", 0, 0, 0);
 	struct rlimit default_limit;
 	struct rlimit increased_limit;
 	FILE* nr_open_file = NULL;
