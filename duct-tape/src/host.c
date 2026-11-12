@@ -23,10 +23,15 @@ struct sysinfo {
 };
 int sysinfo(struct sysinfo *info);
 
-// Linux sysconf
+// Linux sysconf; bionic numbers its names differently from glibc
 long sysconf(int name);
+#if defined(__ANDROID__)
+#define _SC_NPROCESSORS_CONF 0x0060
+#define _SC_NPROCESSORS_ONLN 0x0061
+#else
 #define _SC_NPROCESSORS_CONF 83
 #define _SC_NPROCESSORS_ONLN 84
+#endif
 
 static void cache_sysinfo(void* context) {
 	struct sysinfo* cached_sysinfo = context;

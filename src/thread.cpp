@@ -143,6 +143,13 @@ DarlingServer::Thread::Thread(std::shared_ptr<Process> process, NSID nsid, void*
 		}
 	}
 
+	// Without NSpid lines (kernels built without PID namespaces, such as some Android ones) a
+	// process outside any namespace has its own thread IDs: take the thread's ID as it is.
+	if (_tid == -1 && process->id() == process->nsid() &&
+		std::filesystem::exists("/proc/" + std::to_string(process->id()) + "/task/" + std::to_string(_nstid))) {
+		_tid = _nstid;
+	}
+
 	// if we can't determine the thread id from procfs, try some other more costly methods.
 	if (_tid == -1) {
 		std::vector<pid_t> ids;

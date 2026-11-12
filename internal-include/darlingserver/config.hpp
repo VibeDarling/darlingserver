@@ -18,6 +18,12 @@ namespace DarlingServer {
 		}
 
 		inline std::string defaultMldrPath() {
+			// Set where mldr cannot live in the libexec tree (an Android app's
+			// native library directory).
+			const char* env = getenv("DARLING_MLDR_PATH");
+			if (env && env[0]) {
+				return env;
+			}
 			return getLibexecPath() + "/usr/libexec/darling/mldr";
 		}
 
